@@ -296,14 +296,15 @@ class ChatGPTTelegramBot:
         """
         Generates an image for the given prompt using DALL·E APIs
         """
-        if not self.config['enable_image_generation'] \
-                or not await self.check_allowed_and_within_budget(update, context):
-            return
         
         if not await is_allowed(self.config, update, context):
             logging.warning(f'User {update.message.from_user.name}  (id: {update.message.from_user.id})'
                             ' is not allowed to generate image')
             await self.send_disallowed_message(update, context)
+            return
+        
+        if not self.config['enable_image_generation'] \
+                or not await self.check_allowed_and_within_budget(update, context):
             return
 
         image_query = message_text(update.message)
