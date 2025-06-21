@@ -29,20 +29,23 @@ class ChatGPTTelegramBot:
     Class representing a ChatGPT Telegram Bot.
     """
 
-    def __init__(self, config: dict, openai: OpenAIHelper):
+    def __init__(self, config: dict, openai: OpenAIHelper, mongodb_helper=None):
         """
         Initializes the bot with the given configuration and GPT bot object.
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
+        :param mongodb_helper: MongoDBHelper object (optional)
         """
         self.config = config
         self.openai = openai
+        self.mongodb_helper = mongodb_helper
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
-            BotCommand(command='resend', description=localized_text('resend_description', bot_language))
+            BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
+            BotCommand(command='verify', description="Верифицировать аккаунт")
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -60,6 +63,43 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
 
+    async def verify(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Верифицирует пользователя по tgVerifyBot в subscription.
+        Использование: /verify <код>
+        """
+        if not self.mongodb_helper:
+            await update.message.reply_text("Верификация недоступна.")
+            return
+
+        args = context.args
+        if not args or len(args) != 1:
+            await update.message.reply_text("Используйте команду так: /verify <код>")
+            return
+
+        verify_code = args[0]
+        telegram_id = update.message.from_user.id
+
+        # Проверка и привязка
+        try:
+            subscriptions_collection = self.mongodb_helper.db.subscriptions
+            subscription = subscriptions_collection.find_one({"tgVerifyCode": verify_code})
+
+            if not subscription:
+                await update.message.reply_text("Не удалось привязать аккаунт. Либо у вас нет активной подписки PRO 😔")
+                return
+            
+            result = subscriptions_collection.update_one(
+                {"tgVerifyCode": verify_code},
+                {"$set": {"tgVerifiedId": telegram_id}}
+            )
+            # if result.modified_count > 0:
+            #     await update.message.reply_text("Ваш Telegram аккаунт успешно верифицирован и привязан.")
+            await update.message.reply_text("Отлично! Теперь можете писать в чат 🙃")
+
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка верификации: {e}")
+
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
@@ -70,9 +110,9 @@ class ChatGPTTelegramBot:
         help_text = (
                 localized_text('help_text', bot_language)[0] +
                 '\n\n' +
-                '\n'.join(commands_description) +
-                '\n\n' +
-                localized_text('help_text', bot_language)[1]
+                '\n'.join(commands_description)
+                # '\n\n' +
+                # localized_text('help_text', bot_language)[1]
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
@@ -80,7 +120,7 @@ class ChatGPTTelegramBot:
         """
         Returns token usage statistics for current day and month.
         """
-        if not await is_allowed(self.config, update, context):
+        if not await is_allowed(self.config, update, context, mongodb_helper=self.mongodb_helper):
             logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
                             'is not allowed to request their usage statistics')
             await self.send_disallowed_message(update, context)
@@ -105,14 +145,36 @@ class ChatGPTTelegramBot:
         chat_messages, chat_token_length = self.openai.get_conversation_stats(chat_id)
         remaining_budget = get_remaining_budget(self.config, self.usage, update)
         bot_language = self.config['bot_language']
-        
+
+        # Получение информации о подписке
+        subscription_info = ""
+        if self.mongodb_helper:
+            try:
+                subscriptions_collection = self.mongodb_helper.db.subscriptions
+                subscription = subscriptions_collection.find_one({"tgVerifiedId": user_id})
+                if subscription:
+                    from datetime import datetime
+                    plan = subscription.get("plan", "N/A")
+                    next_billing = subscription.get("nextBillingDate", "N/A")
+                    date = datetime.fromisoformat('2025-07-17 18:34:37.744000')
+                    next_billing = date.strftime("%d.%m.%Y")
+                    subscription_info = (
+                        f"\n\n*Подписка:*\n"
+                        f"Тариф: {plan}\n"
+                        f"Следующее списание: {next_billing}\n"
+                    )
+                else:
+                    subscription_info = "\n\n*Подписка:* Нет активной подписки\n"
+            except Exception as e:
+                subscription_info = f"\n\n*Подписка:* Ошибка получения информации: {e}\n"
+
         text_current_conversation = (
             f"*{localized_text('stats_conversation', bot_language)[0]}*:\n"
             f"{chat_messages} {localized_text('stats_conversation', bot_language)[1]}\n"
             f"{chat_token_length} {localized_text('stats_conversation', bot_language)[2]}\n"
             "----------------------------\n"
         )
-        
+
         # Check if image generation is enabled and, if so, generate the image statistics for today
         text_today_images = ""
         if self.config.get('enable_image_generation', False):
@@ -125,7 +187,7 @@ class ChatGPTTelegramBot:
         text_today_tts = ""
         if self.config.get('enable_tts_generation', False):
             text_today_tts = f"{characters_today} {localized_text('stats_tts', bot_language)}\n"
-        
+
         text_today = (
             f"*{localized_text('usage_today', bot_language)}:*\n"
             f"{tokens_today} {localized_text('stats_tokens', bot_language)}\n"
@@ -137,7 +199,7 @@ class ChatGPTTelegramBot:
             f"{localized_text('stats_total', bot_language)}{current_cost['cost_today']:.2f}\n"
             "----------------------------\n"
         )
-        
+
         text_month_images = ""
         if self.config.get('enable_image_generation', False):
             text_month_images = f"{images_month} {localized_text('stats_images', bot_language)}\n"
@@ -149,7 +211,7 @@ class ChatGPTTelegramBot:
         text_month_tts = ""
         if self.config.get('enable_tts_generation', False):
             text_month_tts = f"{characters_month} {localized_text('stats_tts', bot_language)}\n"
-        
+
         # Check if image generation is enabled and, if so, generate the image statistics for the month
         text_month = (
             f"*{localized_text('usage_month', bot_language)}:*\n"
@@ -171,15 +233,14 @@ class ChatGPTTelegramBot:
                 f"{localized_text(budget_period, bot_language)}: "
                 f"${remaining_budget:.2f}.\n"
             )
-        # No longer works as of July 21st 2023, as OpenAI has removed the billing API
-        # add OpenAI account information for admin request
-        # if is_admin(self.config, user_id):
-        #     text_budget += (
-        #         f"{localized_text('stats_openai', bot_language)}"
-        #         f"{self.openai.get_billing_current_month():.2f}"
-        #     )
 
-        usage_text = text_current_conversation + text_today + text_month + text_budget
+        usage_text = (
+            text_current_conversation
+            # + text_today
+            # + text_month
+            # + text_budget
+            + subscription_info
+        )
         await update.message.reply_text(usage_text, parse_mode=constants.ParseMode.MARKDOWN)
 
     async def resend(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -237,6 +298,12 @@ class ChatGPTTelegramBot:
         """
         if not self.config['enable_image_generation'] \
                 or not await self.check_allowed_and_within_budget(update, context):
+            return
+        
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name}  (id: {update.message.from_user.id})'
+                            ' is not allowed to generate image')
+            await self.send_disallowed_message(update, context)
             return
 
         image_query = message_text(update.message)
@@ -646,6 +713,12 @@ class ChatGPTTelegramBot:
         React to incoming messages and respond accordingly.
         """
         if update.edited_message or not update.message or update.message.via_bot:
+            return
+
+        # Проверка доступа по подписке и telegramId
+        allowed = await is_allowed(self.config, update, context, mongodb_helper=self.mongodb_helper)
+        if not allowed:
+            await self.send_disallowed_message(update, context)
             return
 
         if not await self.check_allowed_and_within_budget(update, context):
@@ -1060,6 +1133,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('start', self.help))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))
+        application.add_handler(CommandHandler('verify', self.verify))
         application.add_handler(CommandHandler(
             'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
         )

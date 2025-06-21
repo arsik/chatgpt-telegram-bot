@@ -148,17 +148,33 @@ async def error_handler(_: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error(f'Exception while handling an update: {context.error}')
 
 
-async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False) -> bool:
+async def is_allowed(config, update: Update, context: CallbackContext, is_inline=False, mongodb_helper=None) -> bool:
     """
     Checks if the user is allowed to use the bot.
     """
+    user_id = update.inline_query.from_user.id if is_inline else update.message.from_user.id
+    name = update.inline_query.from_user.name if is_inline else update.message.from_user.name
+
+    # Admin users are always allowed
+    if is_admin(config, user_id):
+        return True
+
+    # Жёсткая проверка: только если есть telegramId и активная PRO подписка
+    if mongodb_helper:
+        try:
+            subscriptions_collection = mongodb_helper.db.subscriptions
+            subscription = subscriptions_collection.find_one({"tgVerifiedId": user_id})
+            if not subscription:
+                logging.info(f'User {name} (telegramId: {user_id}) not linked in subscriptions')
+                return False
+        except Exception as e:
+            logging.error(f'Error checking PRO subscription for telegramId {user_id}: {e}')
+            return False
+
+    # Traditional access control (работает только если не включена проверка подписки)
     if config['allowed_user_ids'] == '*':
         return True
 
-    user_id = update.inline_query.from_user.id if is_inline else update.message.from_user.id
-    if is_admin(config, user_id):
-        return True
-    name = update.inline_query.from_user.name if is_inline else update.message.from_user.name
     allowed_user_ids = config['allowed_user_ids'].split(',')
     # Check if user is allowed
     if str(user_id) in allowed_user_ids:

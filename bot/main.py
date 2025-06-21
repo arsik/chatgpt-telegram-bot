@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from plugin_manager import PluginManager
 from openai_helper import OpenAIHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
+from mongodb_helper import MongoDBHelper
 
 
 def main():
@@ -100,16 +101,32 @@ def main():
         'tts_prices': [float(i) for i in os.environ.get('TTS_PRICES', "0.015,0.030").split(",")],
         'transcription_price': float(os.environ.get('TRANSCRIPTION_PRICE', 0.006)),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+        'enable_subscription_check': os.environ.get('ENABLE_SUBSCRIPTION_CHECK', 'false').lower() == 'true',
+    }
+
+    mongodb_config = {
+        'mongodb_uri': os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/'),
+        'mongodb_database': os.environ.get('MONGODB_DATABASE', 'chatbot'),
     }
 
     plugin_config = {
         'plugins': os.environ.get('PLUGINS', '').split(',')
     }
 
+    # Setup MongoDB helper if subscription check is enabled
+    mongodb_helper = None
+    if telegram_config['enable_subscription_check']:
+        try:
+            mongodb_helper = MongoDBHelper(mongodb_config)
+            logging.info("MongoDB helper initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize MongoDB helper: {e}")
+            logging.warning("Continuing without subscription check functionality")
+
     # Setup and run ChatGPT and Telegram bot
     plugin_manager = PluginManager(config=plugin_config)
     openai_helper = OpenAIHelper(config=openai_config, plugin_manager=plugin_manager)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper)
+    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper, mongodb_helper=mongodb_helper)
     telegram_bot.run()
 
 
