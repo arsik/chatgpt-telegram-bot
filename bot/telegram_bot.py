@@ -108,8 +108,13 @@ class ChatGPTTelegramBot:
         commands_description = [f'/{command.command} - {command.description}' for command in commands]
         bot_language = self.config['bot_language']
         help_text = (
-                localized_text('help_text', bot_language)[0] +
-                '\n\n' +
+                localized_text('help_text', bot_language)[0] + '\n' +
+                localized_text('help_text', bot_language)[1] + '\n\n' +
+                localized_text('help_text', bot_language)[2] + '\n\n' +
+                localized_text('help_text', bot_language)[3] + '\n\n' +
+                localized_text('help_text', bot_language)[4] + '\n\n' +
+                localized_text('help_text', bot_language)[5] + '\n\n' +
+                localized_text('help_text', bot_language)[6] + '\n' +
                 '\n'.join(commands_description)
                 # '\n\n' +
                 # localized_text('help_text', bot_language)[1]
